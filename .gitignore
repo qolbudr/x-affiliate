@@ -4,3 +4,7 @@ dist/
 *.log
 logs/
 .DS_Store
+
+# CSV input lokal — jangan commit, beda tiap minggu & bisa kebawa link affiliate.
+today.csv
+
