@@ -31,7 +31,6 @@ function defaultState(): RotatorState {
     lastPostedNames: [],
     postsToday: 0,
     postsDate: todayWIB(),
-    postedSlots: [],
   };
 }
 
@@ -45,7 +44,6 @@ function readState(): RotatorState {
       lastPostedNames: Array.isArray(parsed.lastPostedNames) ? parsed.lastPostedNames : [],
       postsToday: typeof parsed.postsToday === 'number' ? parsed.postsToday : 0,
       postsDate: typeof parsed.postsDate === 'string' ? parsed.postsDate : todayWIB(),
-      postedSlots: Array.isArray(parsed.postedSlots) ? parsed.postedSlots : [],
     };
   } catch {
     return defaultState();
@@ -63,7 +61,7 @@ function writeState(state: RotatorState): void {
 function rollDateIfNeeded(state: RotatorState): RotatorState {
   const today = todayWIB();
   if (state.postsDate !== today) {
-    return { ...state, postsDate: today, postsToday: 0, postedSlots: [] };
+    return { ...state, postsDate: today, postsToday: 0 };
   }
   return state;
 }
@@ -76,50 +74,6 @@ export function getDailyPostCount(): number {
 
 export function canPostToday(maxPerDay: number): boolean {
   return getDailyPostCount() < maxPerDay;
-}
-
-/**
- * Jam saat ini di zona Asia/Jakarta (0-23) sebagai string 2-digit, ex: '07'.
- */
-export function currentSlotWIB(): string {
-  const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Jakarta',
-    hour: '2-digit',
-    hour12: false,
-  });
-  // Output bisa '07' atau '7' depending on impl; pad manual.
-  const raw = fmt.format(new Date()).trim();
-  return raw.padStart(2, '0').slice(0, 2);
-}
-
-/**
- * Slot prime-time WIB yang dianggap valid buat post-time.
- * Cron jalan tiap 30 menit, tapi cuma slot ini yang fire posting.
- */
-export const PRIME_SLOTS_WIB = ['07', '12', '18', '21'] as const;
-
-/**
- * Cek apakah slot WIB saat ini termasuk prime-time. Toleransi 1 jam ke depan
- * dari jam target — kalau cron delay sampe 30-59 menit, masih dianggap match
- * slot itu (mis. 07:45 WIB → masih dianggap slot '07').
- */
-export function matchedPrimeSlot(): string | null {
-  const slot = currentSlotWIB();
-  return (PRIME_SLOTS_WIB as readonly string[]).includes(slot) ? slot : null;
-}
-
-export function hasPostedSlotToday(slot: string): boolean {
-  const state = rollDateIfNeeded(readState());
-  writeState(state);
-  return (state.postedSlots ?? []).includes(slot);
-}
-
-export function markSlotPosted(slot: string): void {
-  const state = rollDateIfNeeded(readState());
-  const existing = state.postedSlots ?? [];
-  if (!existing.includes(slot)) {
-    writeState({ ...state, postedSlots: [...existing, slot] });
-  }
 }
 
 /**

@@ -1,16 +1,20 @@
 name: Auto post (Buffer → X)
 
-# Cron jalan tiap 30 menit (frequent cron lebih reliable di GH Actions
-# dibanding cron 1x/hari yang sering ke-skip saat load tinggi).
+# Prime-time WIB (Asia/Jakarta = UTC+7).
+# GitHub Actions cron pakai UTC, jadi di-shift -7 jam:
+#   07:00 WIB = 00:00 UTC
+#   12:00 WIB = 05:00 UTC
+#   18:00 WIB = 11:00 UTC
+#   21:00 WIB = 14:00 UTC
 #
-# Internal slot-gating di src/poster.ts cuma fire posting kalau jam saat ini
-# masuk salah satu slot prime-time WIB: 07/12/18/21. Slot yang udah ke-post
-# hari ini juga di-skip (state tersimpan di data/state.json).
-#
-# Hasilnya: cron fire 48x/hari, tapi cuma 4x yang beneran posting.
+# NOTE: cron GitHub Actions kadang delay 5–30 menit saat load tinggi.
+# Buat hard-deadline post, pakai eksternal scheduler (server, fly.io, etc).
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 0 * * *'   # 07:00 WIB
+    - cron: '0 5 * * *'   # 12:00 WIB
+    - cron: '0 11 * * *'  # 18:00 WIB
+    - cron: '0 14 * * *'  # 21:00 WIB
   workflow_dispatch:
     inputs:
       style:
@@ -28,11 +32,6 @@ on:
         required: false
         type: boolean
         default: false
-      force:
-        description: 'Bypass slot gating (post sekarang juga)'
-        required: false
-        type: boolean
-        default: true
 
 # Cegah 2 run jalan bareng (kalau cron + manual trigger nyaris bareng).
 concurrency:
@@ -75,10 +74,6 @@ jobs:
           # variable POST_STYLE, fallback akhir ke 'mixed'.
           POST_STYLE: ${{ inputs.style != '' && inputs.style || vars.POST_STYLE || 'mixed' }}
           DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
-          # FORCE=true bypass slot gating; cuma true kalau manual dispatch
-          # dengan checkbox "force" dicentang. Di cron jadwalan otomatis,
-          # selalu false supaya gating jalan.
-          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
 
           # Konstanta runtime
           BUFFER_MODE: now
