@@ -256,9 +256,12 @@ function enforceThreeBlockFormat(text: string, requiredLink: string): string {
   }
 
   // Buang shopping emoji dari caption supaya gak duplikat di blok link.
+  // PENTING: pake flag /u — tanpa /u, regex bakal motong di tengah surrogate
+  // pair dan ninggalin lone surrogate dari emoji lain (mis. 😭 yang share
+  // high surrogate \uD83D dengan 🛒/🛍/👜 → bikin render rusak di X).
   let caption = captionLines
     .join('\n')
-    .replace(/[🛒🛍️🛍👜]/g, '')
+    .replace(/[🛒🛍️🛍👜]/gu, '')
     .replace(/\n{2,}/g, '\n')
     .trim();
   if (!caption) caption = 'wajib check ini deh, worth it parah';
