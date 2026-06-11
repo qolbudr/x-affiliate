@@ -32,4 +32,11 @@ export interface RotatorState {
   lastPostedNames: string[];
   postsToday: number;
   postsDate: string; // YYYY-MM-DD WIB
+  /**
+   * Slot prime-time WIB yang udah ke-post hari ini.
+   * Mencegah double-post kalau cron tiap 30 menit fire 2x dalam window
+   * yang sama. Contoh value: ['07', '12'] artinya slot 07:00 & 12:00 WIB
+   * udah ke-post.
+   */
+  postedSlots?: string[];
 }
