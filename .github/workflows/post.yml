@@ -1,0 +1,101 @@
+name: Auto post (Buffer → X)
+
+# Prime-time WIB (Asia/Jakarta = UTC+7).
+# GitHub Actions cron pakai UTC, jadi di-shift -7 jam:
+#   07:00 WIB = 00:00 UTC
+#   12:00 WIB = 05:00 UTC
+#   18:00 WIB = 11:00 UTC
+#   21:00 WIB = 14:00 UTC
+#
+# NOTE: cron GitHub Actions kadang delay 5–30 menit saat load tinggi.
+# Buat hard-deadline post, pakai eksternal scheduler (server, fly.io, etc).
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 07:00 WIB
+    - cron: '0 5 * * *'   # 12:00 WIB
+    - cron: '0 11 * * *'  # 18:00 WIB
+    - cron: '0 14 * * *'  # 21:00 WIB
+  workflow_dispatch:
+    inputs:
+      style:
+        description: 'Override POST_STYLE'
+        required: false
+        type: choice
+        default: ''
+        options:
+          - ''
+          - single
+          - best_buy
+          - mixed
+      dry_run:
+        description: 'Dry run (generate tweet, gak ngirim ke Buffer)'
+        required: false
+        type: boolean
+        default: false
+
+# Cegah 2 run jalan bareng (kalau cron + manual trigger nyaris bareng).
+concurrency:
+  group: x-affiliate-post
+  cancel-in-progress: false
+
+# Butuh write access buat commit state.json balik ke repo.
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Token default cukup karena permissions: contents: write di atas.
+          persist-credentials: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Post to Buffer
+        env:
+          # Wajib (set di repo Settings → Secrets and variables → Actions → Secrets)
+          BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
+          BUFFER_PROFILE_ID: ${{ secrets.BUFFER_PROFILE_ID }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
+
+          # Optional override via workflow_dispatch input, fallback ke repo
+          # variable POST_STYLE, fallback akhir ke 'mixed'.
+          POST_STYLE: ${{ inputs.style != '' && inputs.style || vars.POST_STYLE || 'mixed' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+
+          # Konstanta runtime
+          BUFFER_MODE: now
+          TZ: Asia/Jakarta
+          MAX_POSTS_PER_DAY: '4'
+          BEST_BUY_COUNT: '4'
+        run: npm run post:once
+
+      - name: Commit state & history
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Pastikan data/ ada (kalau ini run pertama).
+          git add data/state.json data/post-history.json 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "chore(state): update post history & rotator state [skip ci]"
+            # Pull & rebase dulu in case ada commit lain (race antar cron tick).
+            git pull --rebase --autostash
+            git push
+          fi
