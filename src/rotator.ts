@@ -3,20 +3,26 @@ import * as path from 'path';
 import { Product, RotatorState } from './types';
 import { products } from './products';
 
-// DATA_DIR bisa di-override via env (mis. Vercel pake `/tmp/data` karena
-// project root read-only). Default: <cwd>/data (lokal & GH Actions).
-const DATA_DIR =
-  process.env.DATA_DIR && process.env.DATA_DIR.trim() !== ''
+// DATA_DIR di-resolve LAZY tiap call — supaya env DATA_DIR yang di-set
+// belakangan (mis. di Vercel function handler) tetep ke-pickup. Kalau
+// di-resolve di top-level, env yang di-set setelah modul ke-import gak
+// akan kebaca.
+function dataDir(): string {
+  return process.env.DATA_DIR && process.env.DATA_DIR.trim() !== ''
     ? path.resolve(process.env.DATA_DIR)
     : path.resolve(process.cwd(), 'data');
-const STATE_FILE = path.join(DATA_DIR, 'state.json');
+}
+function stateFile(): string {
+  return path.join(dataDir(), 'state.json');
+}
 
 /** Berapa produk terakhir yang TIDAK boleh dipilih lagi (anti repeat). */
 const RECENT_WINDOW = 3;
 
 function ensureDataDir(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  const dir = dataDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
@@ -41,9 +47,10 @@ function defaultState(): RotatorState {
 
 function readState(): RotatorState {
   ensureDataDir();
-  if (!fs.existsSync(STATE_FILE)) return defaultState();
+  const file = stateFile();
+  if (!fs.existsSync(file)) return defaultState();
   try {
-    const raw = fs.readFileSync(STATE_FILE, 'utf-8');
+    const raw = fs.readFileSync(file, 'utf-8');
     const parsed = JSON.parse(raw) as Partial<RotatorState>;
     return {
       lastPostedNames: Array.isArray(parsed.lastPostedNames) ? parsed.lastPostedNames : [],
@@ -57,7 +64,7 @@ function readState(): RotatorState {
 
 function writeState(state: RotatorState): void {
   ensureDataDir();
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  fs.writeFileSync(stateFile(), JSON.stringify(state, null, 2), 'utf-8');
 }
 
 /**

@@ -77,11 +77,16 @@ export class BufferClient {
 
   /**
    * Post format "best buy thread":
-   *  - main tweet
-   *  - di-attach thread reply via metadata.twitter.thread (native Buffer thread)
+   *  - 1 main tweet hype (intro hook)
+   *  - N reply per produk (native Twitter thread via Buffer)
    *
-   * Buffer akan publish main tweet ke X, lalu otomatis post tiap reply
-   * sebagai balasan dari tweet sebelumnya.
+   * PENTING: di Buffer GraphQL, kalo `metadata.twitter.thread` di-set, SEMUA
+   * tweet diambil dari array itu — top-level `text` jadi cuma fallback/preview.
+   * Jadi MAIN tweet WAJIB di-include sebagai item pertama di `thread`,
+   * bukan cuma di `text`.
+   *
+   * Buffer akan publish thread mulai dari `thread[0]` ke X, lalu otomatis post
+   * tiap item berikutnya sebagai reply ke item sebelumnya.
    */
   async postThread(
     main: string,
@@ -90,20 +95,23 @@ export class BufferClient {
     replyImages?: Array<string[] | undefined>,
   ): Promise<PostResult> {
     const mainAssets = toImageAssets(mainImages);
-    const threadInputs = replies.map((text, i) => ({
+    const replyInputs = replies.map((text, i) => ({
       text,
       assets: toImageAssets(replyImages?.[i]),
     }));
+    // FULL thread = [main, ...replies]. Buffer pake ini sebagai source of truth.
+    const fullThread = [{ text: main, assets: mainAssets }, ...replyInputs];
 
     if (this.dryRun) {
       const id = `dryrun-${Date.now()}`;
       info('DRY_RUN buffer thread', {
         id,
         mode: this.mode,
-        main,
-        replyCount: replies.length,
-        mainImageCount: mainAssets.length,
-        replyImageCounts: threadInputs.map((t) => t.assets.length),
+        threadCount: fullThread.length,
+        tweets: fullThread.map((t) => ({
+          text: t.text,
+          imageCount: t.assets.length,
+        })),
       });
       return { id, text: main, mode: 'dryrun' };
     }
@@ -111,11 +119,13 @@ export class BufferClient {
     return this.withRetry(async () => {
       const variables: Record<string, unknown> = {
         input: this.buildCreatePostInput({
+          // text/assets di-set juga sebagai fallback kalau Buffer butuh
+          // top-level fields (mis. buat preview di dashboard).
           text: main,
           assets: mainAssets,
           metadata: {
             twitter: {
-              thread: threadInputs,
+              thread: fullThread,
             },
           },
         }),

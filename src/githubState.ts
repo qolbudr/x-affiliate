@@ -73,7 +73,14 @@ async function ghGetFile(
 }
 
 /**
- * PUT file ke repo. Auto-detect create vs update via SHA.
+ * PUT file ke repo dengan auto-retry on 409 (SHA conflict).
+ *
+ * GitHub balikin 409 kalau SHA yang kita kasih udah outdated — biasanya karena
+ * commit lain (manual push, GH Actions, atau invocation paralel function ini)
+ * udah ngubah file di-tengah. Solusi: re-fetch SHA terbaru → retry PUT.
+ *
+ * `prevSha` adalah SHA yang kita kira state file-nya, tapi kalau remote-nya
+ * udah berubah, GitHub bakal nolak. Retry max 3x cukup buat kasus normal.
  */
 async function ghPutFile(
   cfg: GhConfig,
@@ -82,21 +89,41 @@ async function ghPutFile(
   prevSha: string | null,
   message: string,
 ): Promise<void> {
-  const url = `${API}/repos/${cfg.repo}/contents/${repoPath}`;
-  const body: Record<string, unknown> = {
-    message,
-    content: Buffer.from(content, 'utf-8').toString('base64'),
-    branch: cfg.branch,
-  };
-  if (prevSha) body.sha = prevSha;
+  let sha = prevSha;
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const url = `${API}/repos/${cfg.repo}/contents/${repoPath}`;
+    const body: Record<string, unknown> = {
+      message,
+      content: Buffer.from(content, 'utf-8').toString('base64'),
+      branch: cfg.branch,
+    };
+    if (sha) body.sha = sha;
 
-  const res = await fetch(url, {
-    method: 'PUT',
-    headers: { ...(await ghHeaders(cfg.token)), 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(`GH PUT ${repoPath} HTTP ${res.status}: ${await res.text()}`);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        ...(await ghHeaders(cfg.token)),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) return;
+
+    // 409 = SHA conflict. 422 kadang dipake juga buat conflict di branch
+    // ber-protect-rule atau "is at X but expected Y".
+    const isConflict = res.status === 409 || res.status === 422;
+    if (!isConflict || attempt === maxAttempts) {
+      throw new Error(
+        `GH PUT ${repoPath} HTTP ${res.status}: ${await res.text()}`,
+      );
+    }
+
+    // Re-fetch SHA terbaru biar PUT next attempt sukses.
+    const fresh = await ghGetFile(cfg, repoPath);
+    sha = fresh?.sha ?? null;
+    // Tiny backoff biar gak hammer API kalau race-nya cepet.
+    await new Promise((r) => setTimeout(r, 250 * attempt));
   }
 }
 
@@ -141,7 +168,10 @@ export async function pullStateFromGitHub(): Promise<{
 
 /**
  * Push local DATA_DIR/state.json + post-history.json balik ke GitHub.
- * Cuma push file yang berubah (compare content vs prevSha-nya).
+ *
+ * Sequential (bukan paralel) karena tiap PUT bikin commit baru yang shift HEAD;
+ * PUT paralel pasti bikin yang kedua dapet SHA outdated. Sequential + retry
+ * di ghPutFile() udah cukup handle race.
  */
 export async function pushStateToGitHub(prev: {
   stateSha: string | null;
@@ -151,31 +181,24 @@ export async function pushStateToGitHub(prev: {
   const stateLocal = path.join(cfg.dataDir, 'state.json');
   const historyLocal = path.join(cfg.dataDir, 'post-history.json');
 
-  const tasks: Array<Promise<void>> = [];
   if (fs.existsSync(stateLocal)) {
     const content = fs.readFileSync(stateLocal, 'utf-8');
-    tasks.push(
-      ghPutFile(
-        cfg,
-        'data/state.json',
-        content,
-        prev.stateSha,
-        'chore(state): update rotator state [skip ci]',
-      ),
+    await ghPutFile(
+      cfg,
+      'data/state.json',
+      content,
+      prev.stateSha,
+      'chore(state): update rotator state [skip ci]',
     );
   }
   if (fs.existsSync(historyLocal)) {
     const content = fs.readFileSync(historyLocal, 'utf-8');
-    tasks.push(
-      ghPutFile(
-        cfg,
-        'data/post-history.json',
-        content,
-        prev.historySha,
-        'chore(state): update post history [skip ci]',
-      ),
+    await ghPutFile(
+      cfg,
+      'data/post-history.json',
+      content,
+      prev.historySha,
+      'chore(state): update post history [skip ci]',
     );
   }
-
-  await Promise.all(tasks);
 }

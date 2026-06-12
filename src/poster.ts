@@ -6,6 +6,11 @@ import { canPostToday, pickBestBuyProducts, recordPost, rotateProduct } from './
 import { generateBestBuy, generateTweet } from './templates';
 import { Product } from './types';
 
+interface PostOutcome {
+  tweetId: string | null;
+  error?: string;
+}
+
 /**
  * Post 1 update (single) ke Buffer.
  */
@@ -14,7 +19,7 @@ export async function postTweet(
   ai: AIClient,
   config: AppConfig,
   product: Product,
-): Promise<void> {
+): Promise<PostOutcome> {
   const { text, format } = await generateTweet(ai, product);
   info('queueing single to buffer', {
     product: product.name,
@@ -47,19 +52,18 @@ export async function postTweet(
       ...(errMsg ? { error: errMsg } : {}),
     });
   }
+  return { tweetId: updateId, ...(errMsg ? { error: errMsg } : {}) };
 }
 
 /**
- * Post format "best buy thread" ala @leemonnadee:
- *  - 1 main tweet hype
- *  - N reply per produk (native Twitter thread via Buffer)
+ * Post format "best buy thread" ala @leemonnadee.
  */
 export async function postBestBuy(
   client: BufferClient,
   ai: AIClient,
   config: AppConfig,
   picks: Product[],
-): Promise<void> {
+): Promise<PostOutcome> {
   const { main, replies } = await generateBestBuy(ai, picks);
   info('queueing best_buy thread to buffer', {
     count: picks.length,
@@ -95,6 +99,29 @@ export async function postBestBuy(
       ...(errMsg ? { error: errMsg } : {}),
     });
   }
+  return { tweetId: updateId, ...(errMsg ? { error: errMsg } : {}) };
+}
+
+/**
+ * Hasil 1 invocation runOnce.
+ *  - 'posted'        → tweet dibuat (atau di-queue) di Buffer
+ *  - 'limit_reached' → batas harian sudah tercapai
+ *  - 'no_products'   → daftar produk kosong
+ */
+export interface RunOnceResult {
+  status: 'posted' | 'limit_reached' | 'no_products';
+  style?: 'single' | 'best_buy';
+  product?: string;
+  /** Buffer update id (atau 'dryrun-...' kalau DRY_RUN). null kalau gagal post. */
+  tweetId?: string | null;
+  /** Error message kalau Buffer call gagal (status tetap 'posted' karena attempt udah dilakukan). */
+  postError?: string;
+  /** True kalau env DRY_RUN aktif — tweet GAK dikirim ke Buffer. */
+  dryRun?: boolean;
+  /** Buffer mode: 'now' (post langsung) atau 'queue' (masuk antrian). */
+  bufferMode?: string;
+  postsToday?: number;
+  maxPostsPerDay?: number;
 }
 
 /**
@@ -107,20 +134,41 @@ export async function runOnce(
   client: BufferClient,
   ai: AIClient,
   config: AppConfig,
-): Promise<void> {
+): Promise<RunOnceResult> {
   if (!canPostToday(config.maxPostsPerDay)) {
     info('limit harian sudah tercapai, skip', { max: config.maxPostsPerDay });
-    return;
+    return {
+      status: 'limit_reached',
+      maxPostsPerDay: config.maxPostsPerDay,
+      dryRun: config.dryRun,
+    };
   }
 
   const style = resolveStyle(config);
   if (style === 'best_buy') {
     const picks = pickBestBuyProducts(config.bestBuyCount);
-    await postBestBuy(client, ai, config, picks);
-  } else {
-    const product = rotateProduct();
-    await postTweet(client, ai, config, product);
+    const outcome = await postBestBuy(client, ai, config, picks);
+    return {
+      status: 'posted',
+      style: 'best_buy',
+      product: picks.map((p) => p.name).join(', '),
+      tweetId: outcome.tweetId,
+      ...(outcome.error ? { postError: outcome.error } : {}),
+      dryRun: config.dryRun,
+      bufferMode: config.buffer.mode,
+    };
   }
+  const product = rotateProduct();
+  const outcome = await postTweet(client, ai, config, product);
+  return {
+    status: 'posted',
+    style: 'single',
+    product: product.name,
+    tweetId: outcome.tweetId,
+    ...(outcome.error ? { postError: outcome.error } : {}),
+    dryRun: config.dryRun,
+    bufferMode: config.buffer.mode,
+  };
 }
 
 /**

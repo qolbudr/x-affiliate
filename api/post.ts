@@ -58,7 +58,7 @@ export default async function handler(
     const config = loadConfig();
     const client = new BufferClient(config);
     const ai = new AIClient(config.ai);
-    await runOnce(client, ai, config);
+    const result = await runOnce(client, ai, config);
 
     // 3. Push state balik ke GitHub.
     await pushStateToGitHub(prev);
@@ -66,6 +66,7 @@ export default async function handler(
     res.status(200).json({
       ok: true,
       durationMs: Date.now() - startedAt,
+      ...result,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

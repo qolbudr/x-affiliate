@@ -2,16 +2,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Scrape product info dari today.csv → APPEND ke src/products.ts.
+ * Scrape product info dari today.csv → REPLACE src/products.ts.
  *
  * Flow:
  *  1. Baca today.csv (header Shopee Affiliate)
  *  2. Parse: ambil "Link Produk", "Link Komisi", "Nama Produk", "Harga"
- *  3. Load src/products.ts existing → kumpulin affiliateLink yang udah ada
- *  4. Skip baris yang affiliateLink-nya udah pernah ditambah (dedup append-mode)
- *  5. Extract shopid + itemid → hit Shopee API / crawler UA buat image hash
- *  6. Normalisasi nama (truncate, hilangin emoji noise) + harga
- *  7. APPEND produk baru di belakang array existing → tulis ulang src/products.ts
+ *  3. Dedup baris dalam CSV itu sendiri (by affiliateLink/itemId)
+ *  4. Extract shopid + itemid → hit Shopee API / crawler UA buat image hash
+ *  5. Normalisasi nama (truncate, hilangin emoji noise) + harga
+ *  6. REPLACE src/products.ts — output isinya CUMA produk dari CSV terbaru,
+ *     produk lama ditimpa total.
  *
  * Run:  npm run products:scrape
  */
@@ -310,47 +310,13 @@ function renderProductsTs(items: ScrapedProduct[]): string {
  * Daftar produk yang akan dirotasi.
  *
  * AUTO-GENERATED dari today.csv via \`npm run products:scrape\`.
- * Mode: APPEND — produk baru ditambah di belakang, existing dipertahankan.
- * Edit manual aman, tapi run ulang scraper bakal overwrite (tetap merge dengan
- * yang sebelumnya pernah di-scrape).
+ * Mode: REPLACE — file ini di-overwrite tiap kali scraper dijalanin.
+ * Edit manual bakal hilang kalau scraper di-run lagi.
  */
 export const products: Product[] = [
 ${blocks}
 ];
 `;
-}
-
-/**
- * Load existing src/products.ts (kalau ada) supaya append-mode bisa
- * preserve produk lama. Pakai dynamic import — kalau file korup atau gak ada,
- * fallback ke array kosong.
- */
-async function loadExistingProducts(): Promise<ScrapedProduct[]> {
-  if (!fs.existsSync(OUT_PATH)) return [];
-  try {
-    // Bust require cache supaya re-run di watch mode tetep fresh.
-    delete require.cache[require.resolve(OUT_PATH)];
-    const mod = (await import(OUT_PATH)) as {
-      products?: Array<{
-        name: string;
-        affiliateLink: string;
-        price: string;
-        images?: string[];
-      }>;
-    };
-    if (!Array.isArray(mod.products)) return [];
-    return mod.products.map((p) => ({
-      name: p.name,
-      affiliateLink: p.affiliateLink,
-      price: p.price,
-      images: Array.isArray(p.images) ? p.images : [],
-    }));
-  } catch (e) {
-    console.warn(
-      `[load-existing] gagal baca ${OUT_PATH}: ${(e as Error).message} — start dari kosong`,
-    );
-    return [];
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -364,26 +330,12 @@ async function main(): Promise<void> {
   const rows = readCsv();
   console.log(`[csv] ${rows.length} baris dibaca`);
 
-  // Load existing products buat append-mode.
-  const existing = await loadExistingProducts();
-  console.log(`[existing] ${existing.length} produk lama di src/products.ts`);
-  const existingKeys = new Set(
-    existing.map((p) => p.affiliateLink.trim()).filter(Boolean),
-  );
-
-  // Dedup: skip CSV row yang
-  //   (a) duplikat dalam CSV itu sendiri, ATAU
-  //   (b) affiliateLink-nya udah ada di src/products.ts.
+  // Dedup CSV-internal aja (kalau ada baris yang affiliateLink/itemId-nya sama).
   const seenInRun = new Set<string>();
   const unique: CsvRow[] = [];
-  let skippedExisting = 0;
   for (const r of rows) {
     const key = r.affiliateLink.trim() || r.itemId;
     if (!key) continue;
-    if (existingKeys.has(key)) {
-      skippedExisting++;
-      continue;
-    }
     if (seenInRun.has(key)) {
       console.log(`[dedup] skip duplikat dalam CSV: ${r.name}`);
       continue;
@@ -391,12 +343,10 @@ async function main(): Promise<void> {
     seenInRun.add(key);
     unique.push(r);
   }
-  console.log(
-    `[dedup] ${unique.length} produk baru (skip ${skippedExisting} udah pernah di-scrape)`,
-  );
+  console.log(`[dedup] ${unique.length} produk unik dari CSV`);
 
   if (unique.length === 0) {
-    console.log('✅ Semua produk di CSV udah ada di src/products.ts. No-op.');
+    console.log('⚠️  CSV kosong / semua baris invalid. Abort tanpa overwrite.');
     return;
   }
 
@@ -413,17 +363,16 @@ async function main(): Promise<void> {
     await new Promise((res) => setTimeout(res, 700));
   }
 
-  // APPEND: produk lama di depan, yang baru di belakang.
-  const merged = [...existing, ...fresh];
-  const ts = renderProductsTs(merged);
+  // REPLACE: timpa src/products.ts dengan hasil scrape terbaru.
+  const ts = renderProductsTs(fresh);
   fs.writeFileSync(OUT_PATH, ts, 'utf-8');
   console.log(
-    `\n✅ Updated ${OUT_PATH} (+${fresh.length} baru, total ${merged.length} produk)`,
+    `\n✅ Replaced ${OUT_PATH} (${fresh.length} produk dari CSV terbaru)`,
   );
   const noImg = fresh.filter((p) => p.images.length === 0).length;
   if (noImg > 0) {
     console.log(
-      `⚠️  ${noImg} produk baru tanpa gambar. Cek log [api-fail]/[crawler-fail] di atas.`,
+      `⚠️  ${noImg} produk tanpa gambar. Cek log [api-fail]/[crawler-fail] di atas.`,
     );
   }
 }
