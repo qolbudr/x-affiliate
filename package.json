@@ -10,7 +10,7 @@
     "dev": "ts-node src/index.ts",
     "post:once": "ts-node src/scripts/postOnce.ts",
     "buffer:profiles": "ts-node src/scripts/bufferProfiles.ts",
-    "products:scrape": "ts-node src/scripts/scrapeProducts.ts",
+    "products:scrape": "ts-node src/scripts/scrapeProducts.ts && vercel --prod && git add . && git commit -m 'Update products' && git push",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
