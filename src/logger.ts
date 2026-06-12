@@ -2,7 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PostLogEntry } from './types';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+// DATA_DIR bisa di-override via env (mis. Vercel pake `/tmp/data` karena
+// project root read-only). Default: <cwd>/data (lokal & GH Actions).
+const DATA_DIR =
+  process.env.DATA_DIR && process.env.DATA_DIR.trim() !== ''
+    ? path.resolve(process.env.DATA_DIR)
+    : path.resolve(process.cwd(), 'data');
 const LOG_FILE = path.join(DATA_DIR, 'post-history.json');
 
 function ensureDataDir(): void {

@@ -23,6 +23,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@vercel/node": "^5.8.17",
     "dotenv": "16.4.5",
     "node-cron": "3.0.3"
   },

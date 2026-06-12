@@ -3,7 +3,12 @@ import * as path from 'path';
 import { Product, RotatorState } from './types';
 import { products } from './products';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+// DATA_DIR bisa di-override via env (mis. Vercel pake `/tmp/data` karena
+// project root read-only). Default: <cwd>/data (lokal & GH Actions).
+const DATA_DIR =
+  process.env.DATA_DIR && process.env.DATA_DIR.trim() !== ''
+    ? path.resolve(process.env.DATA_DIR)
+    : path.resolve(process.cwd(), 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
 /** Berapa produk terakhir yang TIDAK boleh dipilih lagi (anti repeat). */

@@ -1,20 +1,10 @@
 name: Auto post (Buffer → X)
 
-# Prime-time WIB (Asia/Jakarta = UTC+7).
-# GitHub Actions cron pakai UTC, jadi di-shift -7 jam:
-#   07:00 WIB = 00:00 UTC
-#   12:00 WIB = 05:00 UTC
-#   18:00 WIB = 11:00 UTC
-#   21:00 WIB = 14:00 UTC
-#
-# NOTE: cron GitHub Actions kadang delay 5–30 menit saat load tinggi.
-# Buat hard-deadline post, pakai eksternal scheduler (server, fly.io, etc).
+# Scheduler utama: cron-job.org → POST /api/post di Vercel.
+# Workflow ini cuma dipake buat manual dispatch (debugging, smoke test, atau
+# kalau Vercel function lagi down). Cron schedule sengaja gak di-set karena
+# udah di-handle di luar.
 on:
-  schedule:
-    - cron: '0 0 * * *'   # 07:00 WIB
-    - cron: '0 5 * * *'   # 12:00 WIB
-    - cron: '0 11 * * *'  # 18:00 WIB
-    - cron: '0 14 * * *'  # 21:00 WIB
   workflow_dispatch:
     inputs:
       style:
