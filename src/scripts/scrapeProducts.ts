@@ -220,13 +220,34 @@ async function fetchShopeeApiImages(
 
 /**
  * Fallback paling reliable: pretend jadi Facebook crawler.
- * HTML-nya ngandung banyak hash gambar produk (CDN: down-id.img.susercontent.com/file/{hash}).
+ * HTML-nya ngandung gambar produk + avatar toko + banner (CDN sama:
+ * down-id.img.susercontent.com/file/{hash}).
  *
- * Filter:
- *  - skip "promo-dim-..." (banner promo, bukan foto produk)
+ * Strategi (prioritas → fallback):
+ *  1. <meta property="og:image"> — Shopee SSR cuma masukin foto produk
+ *     ke OG tag, jadi avatar toko otomatis ke-skip.
+ *  2. JSON-LD `"image": [...]` di <script type="application/ld+json"> —
+ *     juga product-only.
+ *  3. Regex global terakhir DIBUANG: dulu gampang nyangkut avatar toko /
+ *     thumbnail rekomendasi shop. Kalau OG + JSON-LD kosong, mending
+ *     return [] daripada keisi gambar toko.
+ *
+ * Filter tambahan:
+ *  - skip hash "promo-*" (banner promo)
+ *  - skip hash "sg-*" (banner generic)
  *  - dedup by hash
- *  - max 4 (limit X)
+ *  - max 4 (limit X) — di-cap di caller
  */
+function extractHash(url: string): string | null {
+  const m = url.match(/\/file\/([a-z0-9-]+)/i);
+  if (!m) return null;
+  const hash = (m[1] ?? '').toLowerCase();
+  if (!hash) return null;
+  if (hash.startsWith('promo-')) return null;
+  if (hash.startsWith('sg-')) return null;
+  return hash;
+}
+
 async function fetchCrawlerImages(productUrl: string): Promise<string[]> {
   const res = await fetch(productUrl, {
     headers: CRAWLER_HEADERS,
@@ -235,19 +256,41 @@ async function fetchCrawlerImages(productUrl: string): Promise<string[]> {
   if (!res.ok) throw new Error(`crawler fetch HTTP ${res.status}`);
   const html = await res.text();
 
-  const hashes = new Set<string>();
+  const seen = new Set<string>();
   const ordered: string[] = [];
-  const re = /down-id\.img\.susercontent\.com\/file\/([a-z0-9-]+)/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(html)) !== null) {
-    const hash = (m[1] ?? '').toLowerCase();
-    if (!hash) continue;
-    if (hash.startsWith('promo-')) continue;
-    if (hash.startsWith('sg-')) continue; // banner generic
-    if (hashes.has(hash)) continue;
-    hashes.add(hash);
+
+  const pushUrl = (url: string): void => {
+    const hash = extractHash(url);
+    if (!hash || seen.has(hash)) return;
+    seen.add(hash);
     ordered.push(`${IMG_BASE}/${hash}.webp`);
+  };
+
+  // 1. og:image meta tags — product photos only (Shopee gak pernah masukin
+  //    avatar toko ke OG tag).
+  const ogRe =
+    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = ogRe.exec(html)) !== null) {
+    if (m[1]) pushUrl(m[1]);
   }
+
+  if (ordered.length > 0) return ordered;
+
+  // 2. JSON-LD: <script type="application/ld+json"> ... "image": [...] ...
+  const ldRe =
+    /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  while ((m = ldRe.exec(html)) !== null) {
+    const block = m[1] ?? '';
+    const imgFieldRe = /"image"\s*:\s*(\[[^\]]+\]|"[^"]+")/g;
+    let im: RegExpExecArray | null;
+    while ((im = imgFieldRe.exec(block)) !== null) {
+      const raw = im[1] ?? '';
+      const urls = raw.match(/https?:\/\/[^"\s,\]]+/g) ?? [];
+      for (const u of urls) pushUrl(u);
+    }
+  }
+
   return ordered;
 }
 
