@@ -220,23 +220,24 @@ async function fetchShopeeApiImages(
 
 /**
  * Fallback paling reliable: pretend jadi Facebook crawler.
- * HTML-nya ngandung gambar produk + avatar toko + banner (CDN sama:
- * down-id.img.susercontent.com/file/{hash}).
+ * Shopee SSR ngasih HTML lengkap dengan carousel gambar produk.
  *
- * Strategi (prioritas → fallback):
- *  1. <meta property="og:image"> — Shopee SSR cuma masukin foto produk
- *     ke OG tag, jadi avatar toko otomatis ke-skip.
- *  2. JSON-LD `"image": [...]` di <script type="application/ld+json"> —
- *     juga product-only.
- *  3. Regex global terakhir DIBUANG: dulu gampang nyangkut avatar toko /
- *     thumbnail rekomendasi shop. Kalau OG + JSON-LD kosong, mending
- *     return [] daripada keisi gambar toko.
+ * Strategi: target HANYA carousel item utama produk.
+ *   <div class="ust-carousel__item-inner-wrapper">
+ *     <picture><source srcSet="...file/{hash}@resize_w640_nl.webp">
  *
- * Filter tambahan:
- *  - skip hash "promo-*" (banner promo)
- *  - skip hash "sg-*" (banner generic)
+ * Class `ust-carousel__item-inner-wrapper` cuma dipake buat carousel
+ * gambar produk utama — gak nyangkut avatar toko, banner shop, atau
+ * thumbnail rekomendasi. Hashes di luar blok itu di-skip total.
+ *
+ * Kenapa bukan og:image / JSON-LD?
+ *  - og:image di Shopee biasanya `promo-dim-*` (banner promo, bukan produk).
+ *  - JSON-LD di SSR-nya cuma WebSite + BreadcrumbList, gak ada field image.
+ *
+ * Filter:
+ *  - skip hash "promo-*" / "sg-*" (banner)
  *  - dedup by hash
- *  - max 4 (limit X) — di-cap di caller
+ *  - max 4 (di-cap di caller)
  */
 function extractHash(url: string): string | null {
   const m = url.match(/\/file\/([a-z0-9-]+)/i);
@@ -259,36 +260,26 @@ async function fetchCrawlerImages(productUrl: string): Promise<string[]> {
   const seen = new Set<string>();
   const ordered: string[] = [];
 
-  const pushUrl = (url: string): void => {
-    const hash = extractHash(url);
-    if (!hash || seen.has(hash)) return;
-    seen.add(hash);
-    ordered.push(`${IMG_BASE}/${hash}.webp`);
-  };
-
-  // 1. og:image meta tags — product photos only (Shopee gak pernah masukin
-  //    avatar toko ke OG tag).
-  const ogRe =
-    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["']([^"']+)["']/gi;
-  let m: RegExpExecArray | null;
-  while ((m = ogRe.exec(html)) !== null) {
-    if (m[1]) pushUrl(m[1]);
-  }
-
-  if (ordered.length > 0) return ordered;
-
-  // 2. JSON-LD: <script type="application/ld+json"> ... "image": [...] ...
-  const ldRe =
-    /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  while ((m = ldRe.exec(html)) !== null) {
-    const block = m[1] ?? '';
-    const imgFieldRe = /"image"\s*:\s*(\[[^\]]+\]|"[^"]+")/g;
-    let im: RegExpExecArray | null;
-    while ((im = imgFieldRe.exec(block)) !== null) {
-      const raw = im[1] ?? '';
-      const urls = raw.match(/https?:\/\/[^"\s,\]]+/g) ?? [];
-      for (const u of urls) pushUrl(u);
+  // Cari setiap occurrence "ust-carousel__item-inner-wrapper", lalu
+  // ambil hash pertama yg muncul setelahnya (dalam jendela ~2KB —
+  // cukup buat <picture><source srcSet=...>).
+  const marker = 'ust-carousel__item-inner-wrapper';
+  const hashRe = /\/file\/([a-z0-9-]+)/gi;
+  let pos = 0;
+  while (true) {
+    const idx = html.indexOf(marker, pos);
+    if (idx === -1) break;
+    const window = html.slice(idx, idx + 2000);
+    hashRe.lastIndex = 0;
+    const match = hashRe.exec(window);
+    if (match && match[1]) {
+      const hash = extractHash(`/file/${match[1]}`);
+      if (hash && !seen.has(hash)) {
+        seen.add(hash);
+        ordered.push(`${IMG_BASE}/${hash}.webp`);
+      }
     }
+    pos = idx + marker.length;
   }
 
   return ordered;
