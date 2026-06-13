@@ -244,8 +244,12 @@ function extractHash(url: string): string | null {
   if (!m) return null;
   const hash = (m[1] ?? '').toLowerCase();
   if (!hash) return null;
+  // promo-dim-... = banner promo Shopee, bukan produk.
   if (hash.startsWith('promo-')) return null;
-  if (hash.startsWith('sg-')) return null;
+  // Catatan: prefix `sg-...` (CDN Singapore edge) dulu di-blacklist sebagai
+  // "banner generic" — ternyata banyak produk pake CDN itu buat foto resmi.
+  // Sekarang TIDAK di-filter; pembatasan lokasi (carousel marker) udah cukup
+  // mencegah avatar toko / banner ikut ke-scrape.
   return hash;
 }
 
@@ -261,25 +265,43 @@ async function fetchCrawlerImages(productUrl: string): Promise<string[]> {
   const ordered: string[] = [];
 
   // Cari setiap occurrence "ust-carousel__item-inner-wrapper", lalu
-  // ambil hash pertama yg muncul setelahnya (dalam jendela ~2KB —
-  // cukup buat <picture><source srcSet=...>).
+  // ambil hash valid pertama yang muncul setelahnya (dalam jendela ~2KB —
+  // cukup buat <picture><source srcSet=...>). Hash invalid (promo-/sg-)
+  // di-skip, lanjut cari hash berikutnya dalam window yang sama.
   const marker = 'ust-carousel__item-inner-wrapper';
-  const hashRe = /\/file\/([a-z0-9-]+)/gi;
   let pos = 0;
   while (true) {
     const idx = html.indexOf(marker, pos);
     if (idx === -1) break;
     const window = html.slice(idx, idx + 2000);
-    hashRe.lastIndex = 0;
-    const match = hashRe.exec(window);
-    if (match && match[1]) {
-      const hash = extractHash(`/file/${match[1]}`);
-      if (hash && !seen.has(hash)) {
-        seen.add(hash);
-        ordered.push(`${IMG_BASE}/${hash}.webp`);
-      }
+    const hashRe = /\/file\/([a-z0-9-]+)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = hashRe.exec(window)) !== null) {
+      const hash = extractHash(`/file/${match[1] ?? ''}`);
+      if (!hash) continue;
+      if (seen.has(hash)) break;
+      seen.add(hash);
+      ordered.push(`${IMG_BASE}/${hash}.webp`);
+      break;
     }
     pos = idx + marker.length;
+  }
+
+  // Kalau carousel cuma 1 item (produk 1-foto), Shopee kadang gak render
+  // wrapper sama sekali → fallback ke og:image:secure_url + og:image yg
+  // BUKAN promo banner.
+  if (ordered.length === 0) {
+    const ogRe =
+      /<meta[^>]+property=["']og:(?:image|image:secure_url|square_image)["'][^>]+content=["']([^"']+)["']/gi;
+    let m: RegExpExecArray | null;
+    while ((m = ogRe.exec(html)) !== null) {
+      // strip @aspect_... suffix kalau ada (Shopee CDN transform).
+      const cleaned = (m[1] ?? '').split('@')[0] ?? '';
+      const hash = extractHash(cleaned);
+      if (!hash || seen.has(hash)) continue;
+      seen.add(hash);
+      ordered.push(`${IMG_BASE}/${hash}.webp`);
+    }
   }
 
   return ordered;
