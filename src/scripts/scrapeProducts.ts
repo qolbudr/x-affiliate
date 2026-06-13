@@ -307,6 +307,11 @@ async function fetchCrawlerImages(productUrl: string): Promise<string[]> {
   return ordered;
 }
 
+/**
+ * Ambil SEMUA kandidat gambar buat 1 produk (belum di-cap & belum dedup
+ * lintas-produk). Caller di main loop yg tanggung jawab dedup global +
+ * slice ke max 4.
+ */
 async function scrapeImages(row: CsvRow): Promise<string[]> {
   const parsed = parseProductLink(row.productLink);
   if (!parsed) {
@@ -316,14 +321,14 @@ async function scrapeImages(row: CsvRow): Promise<string[]> {
   // 1. Coba API resmi (paling banyak gambar, tapi sering 403 dari residential IP).
   try {
     const images = await fetchShopeeApiImages(parsed.shopId, parsed.itemId);
-    if (images.length > 0) return images.slice(0, 4);
+    if (images.length > 0) return images;
   } catch (e) {
     // Lanjut ke crawler fallback (silent — biasanya 403 doang).
   }
   // 2. Crawler UA (Facebook bot). Reliable di luar API.
   try {
     const images = await fetchCrawlerImages(row.productLink);
-    if (images.length > 0) return images.slice(0, 4);
+    if (images.length > 0) return images;
   } catch (e) {
     console.warn(`[crawler-fail] ${row.itemId}: ${(e as Error).message}`);
   }
@@ -407,13 +412,29 @@ async function main(): Promise<void> {
   }
 
   const fresh: ScrapedProduct[] = [];
+  // Global image dedup — biar gak ada foto sama dipake di 2 produk
+  // berbeda (kadang kejadian buat varian listing dari toko sama).
+  const globalSeen = new Set<string>();
+  const MAX_IMG_PER_PRODUCT = 4;
   for (const r of unique) {
     const name = normalizeName(r.name);
     const price = normalizePrice(r.price);
     const affiliateLink = r.affiliateLink || r.productLink;
     process.stdout.write(`[scrape] ${name} ... `);
-    const images = await scrapeImages(r);
-    console.log(`${images.length} img`);
+    const candidates = await scrapeImages(r);
+    const images: string[] = [];
+    let dropped = 0;
+    for (const url of candidates) {
+      if (images.length >= MAX_IMG_PER_PRODUCT) break;
+      if (globalSeen.has(url)) {
+        dropped++;
+        continue;
+      }
+      globalSeen.add(url);
+      images.push(url);
+    }
+    const note = dropped > 0 ? ` (skip ${dropped} dup)` : '';
+    console.log(`${images.length} img${note}`);
     fresh.push({ name, affiliateLink, price, images });
     // Throttle biar gak diblok Shopee.
     await new Promise((res) => setTimeout(res, 700));
